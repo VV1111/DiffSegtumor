@@ -1,5 +1,6 @@
 
 
 logs/
-evaluate_2d.py
-test_2d.py
+code/evaluate_2d.py
+code/test_2d.py
+
