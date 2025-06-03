@@ -289,6 +289,7 @@ class CenterCrop(object):
 def get_StrongAug(patch_size, sample_num, p_per_sample=0.3):
     tr_transforms = []
     tr_transforms_select = []
+    # print("patch_size,",patch_size)
     tr_transforms.append(RandomCrop(patch_size))
     tr_transforms.append(RenameTransform('image', 'data', True))
     tr_transforms.append(RenameTransform('label', 'seg', True))

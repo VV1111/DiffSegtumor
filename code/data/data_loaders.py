@@ -1,71 +1,92 @@
+import os
 import numpy as np
-from tqdm import tqdm
+import torch
+import nibabel as nib
+import torch.nn.functional as F
 from torch.utils.data import Dataset
-from utils import read_list, read_data, read_list_2d, read_data_2d
+from utils.config import Config
+from torch.utils.data import DataLoader
+import matplotlib.pyplot as plt
 
 
-class DatasetAllTasks(Dataset):
-    def __init__(self, split='train', num_cls=1, task="", repeat=None, transform=None, unlabeled=False, is_val=False, is_2d=False):
-        if is_2d:
-            self.ids_list = read_list_2d(split, task=task)
-        else:
-            self.ids_list = read_list(split, task=task)
-        self.repeat = repeat
-        self.task = task
-        if self.repeat is None:
-            self.repeat = len(self.ids_list)
-        print('total {} datas'.format(self.repeat))
+
+
+class MergedNiiDataset(Dataset):
+    def __init__(self, task,split='train', selected_modalities=None, transform=None, is_val=False,num_cls = 4,suffix='npy'):
+        """
+        Dataset for loading merged npy files per modality.
+
+        """
+        self.split = split
+        self.cfg = Config(task)
+        self.modalities = selected_modalities if selected_modalities else self.cfg.modalities
         self.transform = transform
-        self.unlabeled = unlabeled
-        self.num_cls = num_cls
         self.is_val = is_val
-        self.is_2d = is_2d
-        if self.is_val:
-            self.data_list = {}
-            for data_id in tqdm(self.ids_list):
-                if is_2d:
-                    image, label = read_data(data_id, task=task+"_2d")
-                else:
-                    image, label = read_data(data_id, task=task)
-                self.data_list[data_id] = (image, label)
+        self.num_cls = num_cls  
+        self.suffix =suffix
+        self.data = {}
+        self.length = None
+
+        # === Load .npy files using memory mapping ===
+        if suffix =="npy":
+            for mod in self.modalities:
+                path = os.path.join(self.cfg.save_dir, f"{split}_merged_{mod}.npy")
+                self.data[mod] = np.load(path, mmap_mode='r')
+        elif suffix =="gz":
+            for mod in self.modalities:
+                path = os.path.join(self.cfg.save_dir, f"{split}_merged_{mod}.nii.gz")
+                self.data[mod] = nib.load(path).get_fdata()            
+        self.total_slices = self.data[self.modalities[0]].shape[2]
 
     def __len__(self):
-        return self.repeat
-
-    def _get_data(self, data_id):
-        if self.is_val:
-            image, label = self.data_list[data_id]
-        else:
-            if self.is_2d:
-                image, label = read_data(data_id, task=self.task+"_2d")
-            else:
-                image, label = read_data(data_id, task=self.task)
-        return data_id, image, label
-
+        return self.total_slices
 
     def __getitem__(self, index):
-        index = index % len(self.ids_list)
-        data_id = self.ids_list[index]
-        _, image, label = self._get_data(data_id)
+        """
+        Extract 2D slice from each modality at given Z index.
+        """
+        # Input: Stack selected modalities as channels
+        input_modalities = [mod for mod in self.modalities if mod != 'seg']
+        # image = np.stack([self.data[mod][:, :, index] for mod in input_modalities], axis=0)  # [C, H, W]
+        image = self.data[input_modalities[0]][:, :, index]
+        image = (image - np.min(image)) / (np.max(image) - np.min(image) + 1e-5)
 
-        if self.unlabeled: # <-- for safety
+        if 'seg' in self.modalities:
+            label = self.data['seg'][:, :, index].astype(np.int8)
+            label[label == 4] = 3
+        else:
             label[:] = 0
-        if "synapse" in self.task:
-            image = image.clip(min=-75, max=275)
-
-        elif "mnms" in self.task:
-            p5 = np.percentile(image.flatten(), 0.5)
-            p95 = np.percentile(image.flatten(), 99.5)
-            image = image.clip(min=p5, max=p95)
-
-        image = (image - image.min()) / (image.max() - image.min())
-
         image = image.astype(np.float32)
         label = label.astype(np.int8)
         sample = {'image': image, 'label': label}
 
-        if self.transform:
-            sample = self.transform(sample)
+        if not self.is_val:
+            if self.transform:
+                sample = self.transform(sample)
+        else:
+            sample['image'] = torch.from_numpy(np.expand_dims(sample['image'], 0)).float()
+            sample['label'] = torch.from_numpy(sample['label'])
 
-        return sample
+        # # ============== training ==============
+        # if not self.is_val:
+        #     if self.transform:
+        #         sample = self.transform(sample)
+        #     if 'label' in sample:
+        #         sample['label'] = F.one_hot(sample['label'].long(), self.num_cls).permute(2, 0, 1).float()
+        # # ============== validation ==============
+    
+        return sample             
+
+
+    
+
+
+
+        # plt.figure(figsize=(12, 5))
+        # plt.subplot(1, 1, 1)
+        # plt.imshow(image[0], cmap='gray')
+        # plt.title(f'NIfTI [{self.suffix}]')
+        # plt.axis('off')
+        # plt.savefig(self.suffix+'.png', dpi=150, bbox_inches='tight')
+        # plt.close()
 

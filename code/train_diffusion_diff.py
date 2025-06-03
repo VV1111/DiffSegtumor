@@ -257,16 +257,16 @@ if __name__ == '__main__':
                     x_t, t, noise = model(x=x_start, pred_type="q_sample")
 
                     p_l_xi = model(x=x_t, step=t, image=image_l, pred_type="D_xi_l")
-                    p_l_psi = model(image=image_l, pred_type="D_psi_l")
+                    # p_l_psi = model(image=image_l, pred_type="D_psi_l")
 
                     L_deno = deno_loss(p_l_xi, label_l)
 
-                    weight_diff = diff.cal_weights(p_l_xi.detach(), label_l)
-                    sup_loss.update_weight(weight_diff)
-                    L_diff = sup_loss(p_l_psi, label_l)
+                    # weight_diff = diff.cal_weights(p_l_xi.detach(), label_l)
+                    # sup_loss.update_weight(weight_diff)
+                    # L_diff = sup_loss(p_l_psi, label_l)
 
 
-                    loss = L_deno + L_diff
+                    loss = L_deno
 
                 # backward passes should not be under autocast.
                 amp_grad_scaler.scale(loss).backward()
@@ -278,17 +278,17 @@ if __name__ == '__main__':
 
             loss_list.append(loss.item())
             loss_sup_list.append(L_deno.item())
-            loss_diff_list.append(L_diff.item())
+            # loss_diff_list.append(L_diff.item())
 
 
         writer.add_scalar('lr', get_lr(optimizer), epoch_num)
         writer.add_scalar('loss/loss', np.mean(loss_list), epoch_num)
         writer.add_scalar('loss/deno', np.mean(loss_sup_list), epoch_num)
         writer.add_scalar('loss/diff', np.mean(loss_diff_list), epoch_num)
-        writer.add_scalars('class_weights', dict(zip([str(i) for i in range(config.num_cls)] ,print_func(weight_diff))), epoch_num)
+        # writer.add_scalars('class_weights', dict(zip([str(i) for i in range(config.num_cls)] ,print_func(weight_diff))), epoch_num)
 
         logging.info(f'epoch {epoch_num} : loss : {np.mean(loss_list)} | lr : {get_lr(optimizer)} | mu : {mu}')
-        logging.info(f"     diff_w: {print_func(weight_diff)}")
+        # logging.info(f"     diff_w: {print_func(weight_diff)}")
         optimizer.param_groups[0]['lr'] = poly_lr(epoch_num, args.max_epoch, args.base_lr, 0.9)
 
         mu = get_current_mu(epoch_num)
@@ -307,16 +307,21 @@ if __name__ == '__main__':
             for step, batch in enumerate(tqdm(eval_loader)):
                 with torch.no_grad():
                     image, gt = fetch_data(batch)
-                    p_u_theta = model(image, pred_type="D_psi_l")
+                    
 
-
+                    p_u_theta = model(image, pred_type="ddim_sample")
                     shp = (p_u_theta.shape[0], config.num_cls) + p_u_theta.shape[2:]
                     gt = gt.long()
 
                     y_onehot = F.one_hot(gt, num_classes=config.num_cls).long()
                     y_onehot = y_onehot.squeeze(1).permute(0, 3, 1, 2)
+                    
+
+                    smoothing = GaussianSmoothing(config.num_cls, 3, 1, dim=2)
+                    p_u_theta = smoothing(F.gumbel_softmax(p_u_theta, dim=1))
 
                     p_u_theta = torch.argmax(p_u_theta, dim=1, keepdim=True).long()
+                    p_u_theta = p_u_theta.squeeze(1) 
                     x_onehot = F.one_hot(p_u_theta, num_classes=config.num_cls).long()
                     x_onehot = x_onehot.squeeze(1).permute(0, 3, 1, 2)
 

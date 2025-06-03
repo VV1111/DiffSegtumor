@@ -225,7 +225,11 @@ class TembFusion(nn.Module):
         self.temb_proj = torch.nn.Linear(512, n_filters_out)
     def forward(self, x, temb):
         if temb is not None:
-            x = x + self.temb_proj(nonlinearity(temb))[:, :, None, None, None]
+            # x.shape torch.Size([32, 64, 64, 64]) temb: torch.Size([32, 512])
+            # self.temb_proj(nonlinearity(temb))[:, :, None, None, None].shape torch.Size([32, 64, 1, 1, 1])
+            # x = x + self.temb_proj(nonlinearity(temb))[:, :, None, None, None]
+            x = x + self.temb_proj(nonlinearity(temb))[:, :, None, None]
+
         else:
             x =x
         return x
@@ -535,22 +539,24 @@ class DiffVNet(nn.Module):
             return self.diffusion.q_sample(x, t, noise=noise), t, noise
 
         elif pred_type == "D_xi_l":
+            # print("image",image.shape,"x",x.shape) # image torch.Size([32, 1, 128, 128]) x torch.Size([32, 4, 128, 128])
             x, temb = self.denoise_model.embedding_diffusion(x, t=step, image=image)
+            # print("x",x.shape,"temb",temb.shape) # x torch.Size([32, 32, 128, 128]) temb torch.Size([32, 512])
             x1, x2, x3, x4, x5, temb = self.denoise_model.encoder(x, temb)
             return self.denoise_model.decoder(x1, x2, x3, x4, x5, temb)
 
-        elif pred_type == "D_theta_u":
-            x, temb = self.embedding(image)
-            x1, x2, x3, x4, x5, temb = self.denoise_model.encoder(x, temb)
-            return self.decoder_theta(x1, x2, x3, x4, x5)
+        # elif pred_type == "D_theta_u":
+        #     x, temb = self.embedding(image)
+        #     x1, x2, x3, x4, x5, temb = self.denoise_model.encoder(x, temb)
+        #     return self.decoder_theta(x1, x2, x3, x4, x5)
 
         elif pred_type == "D_psi_l":
             x, temb = self.embedding(image)
             x1, x2, x3, x4, x5, temb = self.denoise_model.encoder(x, temb)
             return self.decoder_psi(x1, x2, x3, x4, x5)
 
-        elif pred_type == "ddim_sample":
-            sample_out = self.sample_diffusion.ddim_sample_loop(self.denoise_model, (image.shape[0], self.n_classes) + image.shape[2:],
-                                                                model_kwargs={"image": image})
-            sample_out = sample_out["pred_xstart"]
-            return sample_out
+        # elif pred_type == "ddim_sample":
+        #     sample_out = self.sample_diffusion.ddim_sample_loop(self.denoise_model, (image.shape[0], self.n_classes) + image.shape[2:],
+        #                                                         model_kwargs={"image": image})
+        #     sample_out = sample_out["pred_xstart"]
+        #     return sample_out

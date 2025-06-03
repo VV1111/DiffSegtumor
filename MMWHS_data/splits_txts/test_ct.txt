@@ -1,4 +1,0 @@
-ct_train_1003
-ct_train_1008
-ct_train_1014
-ct_train_1019
