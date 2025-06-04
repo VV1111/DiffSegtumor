@@ -28,40 +28,11 @@ import cv2
 config = config.Config(args.task)
 
 
-def compute_dice(pred_onehot, target_onehot, mask=None, smooth=1e-5):
-    """
-    pred_onehot & target_onehot: shape (B, C, D, H, W) or (B, C, H, W)
-    mask: shape (B, 1, D, H, W) or (B, 1, H, W) if provided
-    """
-    dims = list(range(2, pred_onehot.dim()))
-
-    if mask is not None:
-        intersection = (pred_onehot * target_onehot * mask).sum(dim=dims)
-        union = (pred_onehot * mask).sum(dim=dims) + (target_onehot * mask).sum(dim=dims)
-    else:
-        intersection = (pred_onehot * target_onehot).sum(dim=dims)
-        union = pred_onehot.sum(dim=dims) + target_onehot.sum(dim=dims)
-
-    dice_per_class = (2. * intersection + smooth) / (union + smooth)
-    return dice_per_class.mean().item()
-
-def compute_iou(pred_onehot, target_onehot, mask=None, smooth=1e-5):
-    dims = list(range(2, pred_onehot.dim()))
-    if mask is not None:
-        intersection = (pred_onehot * target_onehot * mask).sum(dim=dims)
-        union = (((pred_onehot + target_onehot) > 0).float() * mask).sum(dim=dims)
-    else:
-        intersection = (pred_onehot * target_onehot).sum(dim=dims)
-        union = ((pred_onehot + target_onehot) > 0).float().sum(dim=dims)
-
-    iou_per_class = (intersection + smooth) / (union + smooth)
-    return iou_per_class.mean().item()
-
 def safe_dice(pred_i, label_i):
     intersection = np.logical_and(pred_i, label_i).sum()
     union = pred_i.sum() + label_i.sum()
     if union == 0:
-        return 1.0  # 都没有这个类，预测是正确的
+        return 1.0  
     else:
         return 2 * intersection / union
 
