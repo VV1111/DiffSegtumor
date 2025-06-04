@@ -27,6 +27,81 @@ import cv2
  
 config = config.Config(args.task)
 
+
+def compute_dice(pred_onehot, target_onehot, mask=None, smooth=1e-5):
+    """
+    pred_onehot & target_onehot: shape (B, C, D, H, W) or (B, C, H, W)
+    mask: shape (B, 1, D, H, W) or (B, 1, H, W) if provided
+    """
+    dims = list(range(2, pred_onehot.dim()))
+
+    if mask is not None:
+        intersection = (pred_onehot * target_onehot * mask).sum(dim=dims)
+        union = (pred_onehot * mask).sum(dim=dims) + (target_onehot * mask).sum(dim=dims)
+    else:
+        intersection = (pred_onehot * target_onehot).sum(dim=dims)
+        union = pred_onehot.sum(dim=dims) + target_onehot.sum(dim=dims)
+
+    dice_per_class = (2. * intersection + smooth) / (union + smooth)
+    return dice_per_class.mean().item()
+
+def compute_iou(pred_onehot, target_onehot, mask=None, smooth=1e-5):
+    dims = list(range(2, pred_onehot.dim()))
+    if mask is not None:
+        intersection = (pred_onehot * target_onehot * mask).sum(dim=dims)
+        union = (((pred_onehot + target_onehot) > 0).float() * mask).sum(dim=dims)
+    else:
+        intersection = (pred_onehot * target_onehot).sum(dim=dims)
+        union = ((pred_onehot + target_onehot) > 0).float().sum(dim=dims)
+
+    iou_per_class = (intersection + smooth) / (union + smooth)
+    return iou_per_class.mean().item()
+
+def safe_dice(pred_i, label_i):
+    intersection = np.logical_and(pred_i, label_i).sum()
+    union = pred_i.sum() + label_i.sum()
+    if union == 0:
+        return 1.0  # 都没有这个类，预测是正确的
+    else:
+        return 2 * intersection / union
+
+from scipy.ndimage import distance_transform_edt, binary_erosion
+
+def compute_surface(mask):
+    """Compute surface of binary mask"""
+    eroded = binary_erosion(mask)
+    surface = np.logical_xor(mask, eroded)
+    return surface
+
+def asd(pred, gt, spacing=(1.0, 1.0)):
+    """
+    Compute Average Surface Distance (ASD) between two binary masks.
+    Parameters:
+        pred: ndarray, predicted binary mask
+        gt:   ndarray, ground truth binary mask
+        spacing: voxel spacing (tuple), default assumes isotropic
+    Returns:
+        float: ASD in same units as spacing
+    """
+    pred = np.asarray(pred).astype(bool)
+    gt = np.asarray(gt).astype(bool)
+
+    if not pred.any() or not gt.any():
+        return np.nan  # One of the masks is empty, ASD undefined
+
+    surface_pred = compute_surface(pred)
+    surface_gt = compute_surface(gt)
+
+    # Distance from pred surface to gt
+    dt_gt = distance_transform_edt(~gt, sampling=spacing)
+    dt_pred = distance_transform_edt(~pred, sampling=spacing)
+
+    asd_pred2gt = dt_gt[surface_pred].mean()
+    asd_gt2pred = dt_pred[surface_gt].mean()
+
+    return (asd_pred2gt + asd_gt2pred) / 2.0
+
+
 if __name__ == '__main__':
     stride_dict = {
         0: (16, 16),
@@ -79,7 +154,8 @@ if __name__ == '__main__':
         )
         
         values = np.zeros((len(test_loader), config.num_cls, 2)) # dice and asd
-   
+        all_dices = []
+        all_asds = []
         for step, batch in enumerate(tqdm(test_loader)):
             image, label = fetch_data(batch)
             # p_u_theta = model(image, pred_type="D_psi_l")
@@ -90,15 +166,13 @@ if __name__ == '__main__':
             ph, pw = config.patch_size
             sh, sw = stride
 
-
-
             pad_h = max((ph - h), 0)
             pad_w = max((pw - w), 0)
-            padding_flag = pad_h > 0 or pad_w > 0
-            # print('padding_flag',padding_flag,'h, w ',h, w )
-            if padding_flag:
-                image = np.pad(image, [(pad_h, pad_h), (pad_w, pad_w)], mode='constant', constant_values=0)
-
+            # padding_flag = pad_h > 0 or pad_w > 0
+            # # print('padding_flag',padding_flag,'h, w ',h, w )
+            # if padding_flag:
+            #     image = np.pad(image, [(pad_h, pad_h), (pad_w, pad_w)], mode='constant', constant_values=0)
+            cv2.imwrite(f'{test_save_path}/{step}_image.png', image*255)
             # print("image",image.shape,'ph, pw ',ph, pw )
             image = image[np.newaxis]  # shape: (1, H, W)
             _, H, W = image.shape
@@ -129,26 +203,35 @@ if __name__ == '__main__':
                 score_map = score_map / np.maximum(cnt[None, ...], 1e-5)
 
             pred = np.argmax(score_map, axis=0)
+            
             cv2.imwrite(f'{test_save_path}/{step}.png', pred/3*255)
             cv2.imwrite(f'{test_save_path}/{step}_label.png', label/3*255)
 
+
+            #  Dice and  ASD
+            step_dices = []
+            step_asds = []
             for i in range(config.num_cls):
                 pred_i = (pred == i)
                 label_i = (label == i)
+
+                dice = safe_dice(pred_i, label_i) * 100
+                step_dices.append(dice)
+
                 if pred_i.sum() > 0 and label_i.sum() > 0:
-                    dice = metric.binary.dc(pred == i, label == i) * 100
-                    hd95 = metric.binary.asd(pred == i, label == i)
-                    values[step][i-1] = np.array([dice, hd95])
-                elif pred_i.sum() > 0 and label_i.sum() == 0:
-                    dice, hd95 = 0, 128
-                elif pred_i.sum() == 0 and label_i.sum() > 0:
-                    dice, hd95 =  0, 128
-                elif pred_i.sum() == 0 and label_i.sum() == 0:
-                    dice, hd95 =  1, 0
+                    asd_val = asd(pred_i, label_i)  
+                else:
+                    asd_val = np.nan  
+                step_asds.append(asd_val)
 
-                    values[step][i-1] = np.array([dice, hd95])
+            all_dices.append(step_dices)
+            all_asds.append(step_asds)
+        all_dices = np.array(all_dices)     # shape: (num_cases, num_classes)
+        all_asds  = np.array(all_asds)
 
-        values_mean_cases = np.mean(values, axis=0)
+        values_mean_cases = np.stack([np.nanmean(all_dices, axis=0), np.nanmean(all_asds, axis=0)], axis=1)  # shape: (num_classes, 2)
+
+
         fw.write("------ Dice ------" + '\n')
         fw.write(str(np.round(values_mean_cases[:,0],1)) + '\n')
         fw.write("------ ASD ------" + '\n')
